@@ -23,12 +23,12 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 echo ""
-echo "=" * 60
+echo "============================================================"
 echo "✓ 环境设置完成！"
 echo ""
 echo "使用方法："
 echo "  1. 激活虚拟环境: source venv/bin/activate"
-echo "  2. 运行测试: cd test && python run_test.py"
+echo "  2. 运行测试: python test_example.py"
 echo "  3. 启动API: python api.py"
 echo "  4. 退出虚拟环境: deactivate"
-echo "=" * 60
+echo "============================================================"

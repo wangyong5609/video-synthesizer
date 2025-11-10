@@ -4,7 +4,9 @@
 """
 
 import os
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, concatenate_videoclips
+from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip, concatenate_videoclips, ImageClip
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 
 
 def parse_srt_file(srt_path):
@@ -69,6 +71,68 @@ def srt_time_to_seconds(time_str):
     return h * 3600 + m * 60 + s + ms / 1000.0
 
 
+def create_subtitle_image(text, video_width, video_height, fontsize=40):
+    """
+    使用 Pillow 创建字幕图片
+    
+    参数:
+        text (str): 字幕文本
+        video_width (int): 视频宽度
+        video_height (int): 视频高度
+        fontsize (int): 字体大小
+    
+    返回:
+        numpy.ndarray: 图片数组（RGBA格式）
+    """
+    # 创建透明背景
+    img = Image.new('RGBA', (video_width, video_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # 尝试使用系统字体，支持中文
+    try:
+        # macOS 常见中文字体
+        font_paths = [
+            '/System/Library/Fonts/PingFang.ttc',  # macOS 默认中文字体
+            '/System/Library/Fonts/STHeiti Light.ttc',
+            '/System/Library/Fonts/STHeiti Medium.ttc',
+            '/System/Library/Fonts/Hiragino Sans GB.ttc',
+        ]
+        font = None
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, fontsize)
+                break
+        if font is None:
+            font = ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+    
+    # 计算文本边界框
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    # 文本位置（底部居中）
+    x = (video_width - text_width) // 2
+    y = video_height - text_height - 50  # 距离底部50像素
+    
+    # 绘制黑色半透明背景
+    padding = 10
+    bg_rect = [
+        x - padding,
+        y - padding,
+        x + text_width + padding,
+        y + text_height + padding
+    ]
+    draw.rectangle(bg_rect, fill=(0, 0, 0, 180))
+    
+    # 绘制白色文字
+    draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+    
+    # 转换为numpy数组
+    return np.array(img)
+
+
 def add_subtitles_to_video(video_clip, subtitle_path):
     """
     为视频添加字幕
@@ -83,26 +147,26 @@ def add_subtitles_to_video(video_clip, subtitle_path):
     # 解析字幕文件
     subtitles = parse_srt_file(subtitle_path)
 
-    # 创建字幕文本片段列表
+    # 创建字幕图片片段列表
     subtitle_clips = []
 
     for sub in subtitles:
-        # 创建文本片段
-        txt_clip = TextClip(
+        # 使用 Pillow 创建字幕图片
+        subtitle_img = create_subtitle_image(
             sub['text'],
-            fontsize=24,
-            color='white',
-            bg_color='black',
-            method='caption',
-            size=(video_clip.w - 40, None)  # 字幕宽度比视频稍窄
+            video_clip.w,
+            video_clip.h,
+            fontsize=40
         )
-
-        # 设置字幕的显示时间和位置
-        txt_clip = txt_clip.set_start(sub['start']) \
-                           .set_end(sub['end']) \
-                           .set_position(('center', 'bottom'))
-
-        subtitle_clips.append(txt_clip)
+        
+        # 创建 ImageClip
+        img_clip = ImageClip(subtitle_img, ismask=False, transparent=True)
+        
+        # 设置字幕的显示时间
+        img_clip = img_clip.set_start(sub['start']).set_end(sub['end'])
+        img_clip = img_clip.set_position(('center', 'center'))
+        
+        subtitle_clips.append(img_clip)
 
     # 将字幕叠加到视频上
     video_with_subs = CompositeVideoClip([video_clip] + subtitle_clips)
@@ -137,7 +201,7 @@ def process_single_segment(video_path, audio_path=None, subtitle_path=None):
     return video_clip
 
 
-def synthesize_video(segments_data, output_path="output/final_video.mp4"):
+def synthesize_video(segments_data, output_path="output/final_video.mp4", transition_duration=0.5):
     """
     合成最终视频
 
@@ -147,14 +211,18 @@ def synthesize_video(segments_data, output_path="output/final_video.mp4"):
             - audio_path: 音频文件路径（可选）
             - subtitle_path: 字幕文件路径（可选）
         output_path (str): 输出视频文件路径
+        transition_duration (float): 转场时长（秒），默认0.5秒
 
     返回:
         str: 输出视频文件路径
     """
     print(f"开始合成视频，共 {len(segments_data)} 个片段")
+    if transition_duration > 0:
+        print(f"使用叠化转场效果，转场时长: {transition_duration}秒")
 
     # 处理每个视频片段
     processed_clips = []
+    total_segments = len(segments_data)
 
     for i, segment in enumerate(segments_data, 1):
         print(f"处理第 {i} 个片段...")
@@ -165,11 +233,27 @@ def synthesize_video(segments_data, output_path="output/final_video.mp4"):
             subtitle_path=segment.get('subtitle_path')
         )
 
+        # 应用淡入淡出效果实现叠化转场
+        if transition_duration > 0:
+            if i == 1:
+                # 第一个片段：只淡出
+                clip = clip.fadeout(transition_duration)
+            elif i == total_segments:
+                # 最后一个片段：只淡入
+                clip = clip.fadein(transition_duration)
+            else:
+                # 中间片段：淡入和淡出
+                clip = clip.fadein(transition_duration).fadeout(transition_duration)
+
         processed_clips.append(clip)
 
     # 拼接所有片段
-    print("正在拼接所有片段...")
-    final_clip = concatenate_videoclips(processed_clips, method="compose")
+    print("正在拼接所有片段（带转场效果）...")
+    if transition_duration > 0:
+        # 使用负padding实现片段重叠，创建叠化效果
+        final_clip = concatenate_videoclips(processed_clips, method="compose", padding=-transition_duration)
+    else:
+        final_clip = concatenate_videoclips(processed_clips, method="compose")
 
     # 确保输出目录和临时目录存在
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
