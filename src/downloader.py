@@ -5,12 +5,15 @@
 
 import os
 import requests
+import uuid
+import hashlib
 from urllib.parse import urlparse
 
 
 def download_file(url, save_dir="temp"):
     """
     从URL下载文件到指定目录
+    使用URL的MD5哈希值作为文件名的一部分，避免文件名冲突
 
     参数:
         url (str): 文件的URL地址
@@ -25,22 +28,37 @@ def download_file(url, save_dir="temp"):
     # 确保保存目录存在
     os.makedirs(save_dir, exist_ok=True)
 
-    # 从URL中提取文件名
+    # 从URL中提取文件名和扩展名
     parsed_url = urlparse(url)
-    filename = os.path.basename(parsed_url.path)
+    original_filename = os.path.basename(parsed_url.path)
+    
+    # 获取文件扩展名
+    if original_filename and '.' in original_filename:
+        ext = os.path.splitext(original_filename)[1]
+    else:
+        ext = ''
 
-    # 如果URL中没有文件名，使用时间戳作为文件名
-    if not filename:
-        import time
-        filename = f"file_{int(time.time())}"
+    # 为URL生成唯一标识（MD5哈希的前12位）
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+    
+    # 生成唯一文件名：hash_原始文件名 或 hash.扩展名
+    if original_filename:
+        filename = f"{url_hash}_{original_filename}"
+    else:
+        filename = f"{url_hash}{ext}" if ext else url_hash
 
     # 完整的本地文件路径
     local_path = os.path.join(save_dir, filename)
 
+    # 如果文件已存在（相同URL已下载过），直接返回
+    if os.path.exists(local_path):
+        print(f"文件已存在，跳过下载: {local_path}")
+        return local_path
+
     print(f"正在下载: {url}")
 
     # 发送HTTP GET请求下载文件
-    response = requests.get(url, stream=True)
+    response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()  # 如果HTTP状态码不是200，抛出异常
 
     # 将文件内容写入本地
